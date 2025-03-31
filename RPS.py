@@ -1,80 +1,89 @@
-# The ideal response dictionary maps an opponent's predicted move to the move that beats it.
-ideal_response = {'P': 'S', 'R': 'P', 'S': 'R'}
+import random
+
+# Maps an anticipated opponent move to the move that wins against it.
+COUNTER_MOVE = {'P': 'S', 'R': 'P', 'S': 'R'}
+POSSIBLE_MOVES = ['R', 'P', 'S']
+
+# --- Configuration ---
+# How far back to look in the opponent's history for patterns.
+MAX_SEQUENCE_LENGTH = 4 
 
 def player(prev_opponent_play, 
            opponent_history=[], 
-           # Dictionary to store patterns: {'RR': {'R': 1, 'P': 5, 'S': 2}, 'RP': {...}}
-           # Keys are opponent move sequences, values are dictionaries counting opponent's subsequent moves.
-           play_order={}): 
+           # Stores observed patterns: keys are opponent move sequences (e.g., "RP"), 
+           # values are dicts mapping the *next* move ('R','P','S') to its frequency.
+           learned_patterns={}):
+    """
+    Predicts the opponent's next move based on historical patterns 
+    and plays the counter move.
 
-    # --- Initialization and History Update ---
-    if not prev_opponent_play:  # If it's the first move of the match
-        # Reset opponent history and pattern tracking for the new match
+    Manages state (history, patterns) internally using default arguments.
+    State is reset when prev_opponent_play is empty (first call for a match).
+
+    Args:
+        prev_opponent_play: The opponent's last move ('R', 'P', 'S', or empty).
+        opponent_history: List to store opponent's move history (managed internally).
+        learned_patterns: Dict to store patterns (managed internally).
+
+    Returns:
+        The bot's next move ('R', 'P', or 'S').
+    """
+
+    # --- State Management & History Update ---
+    if not prev_opponent_play:
+        # First move of a new match, reset history and learned patterns.
         opponent_history.clear()
-        play_order.clear() 
-        # For the very first guess, we can choose randomly or use a fixed start. 'R' is common.
-        guess = 'R' 
-        return guess
+        learned_patterns.clear()
+        # Start with a default or random move for the very first round.
+        return random.choice(POSSIBLE_MOVES) 
     else:
-        # Add the opponent's last move to their history
+        # Add the opponent's actual last move to the history.
         opponent_history.append(prev_opponent_play)
 
-    # --- Learn Patterns from History ---
-    # We want to learn: "After sequence X, the opponent tends to play move Y"
-    # We look at sequences of different lengths (up to a max_len) ending *before* the last opponent move.
-    max_len = 4 # Consider opponent sequences up to length 4
+    # --- Update Learning Model ---
     history_len = len(opponent_history)
+    # Only update patterns if we have enough history to form a sequence 
+    # plus the move that followed it.
+    if history_len > 1: 
+        # Consider sequences of different lengths ending *before* the opponent's last move.
+        for k in range(1, min(MAX_SEQUENCE_LENGTH + 1, history_len)):
+            # Extract the sequence of length k that occurred right before the last move.
+            # Example: history=[R,P,S,P], k=2 -> sequence = "PS"
+            sequence = "".join(opponent_history[-(k+1):-1]) 
+            move_that_followed = prev_opponent_play
 
-    # Update the play_order dictionary based on the latest move
-    # Example: If history is [R, P, S] and prev_opponent_play is P (history becomes [R, P, S, P])
-    # We update counts for:
-    #  - Sequence "S" was followed by "P"
-    #  - Sequence "PS" was followed by "P"
-    #  - Sequence "RPS" was followed by "P"
-    if history_len > 1: # Need at least one previous move to form a sequence
-        for k in range(1, min(max_len + 1, history_len)): # k is the length of the sequence *before* the last move
-            # sequence = "".join(opponent_history[-(k+1):-1]) # Correct slicing to get sequence before the last move
-            # Example: history = [R, P, S, P], k = 1. Slice is [-2:-1] -> ['S']. Sequence = "S"
-            # Example: history = [R, P, S, P], k = 2. Slice is [-3:-1] -> ['P', 'S']. Sequence = "PS"
-            # Example: history = [R, P, S, P], k = 3. Slice is [-4:-1] -> ['R', 'P', 'S']. Sequence = "RPS"
+            # Ensure the sequence key exists in the pattern dictionary.
+            if sequence not in learned_patterns:
+                learned_patterns[sequence] = {'R': 0, 'P': 0, 'S': 0}
             
-            # Simpler way to get the sequence ending just before the last move:
-            sequence = "".join(opponent_history[history_len - k - 1 : history_len - 1])
-            move_that_followed = prev_opponent_play # The move that came *after* this sequence
+            # Increment the count for the move that followed this sequence.
+            learned_patterns[sequence][move_that_followed] += 1
 
-            # Initialize dictionary entries if they don't exist
-            if sequence not in play_order:
-                play_order[sequence] = {}
-            if move_that_followed not in play_order[sequence]:
-                play_order[sequence][move_that_followed] = 0
-            
-            # Increment the count for the move that followed the sequence
-            play_order[sequence][move_that_followed] += 1
-
-    # --- Make Prediction ---
-    # Predict the opponent's *next* move based on the *current* last sequence(s) in their history.
-    # Start checking from the longest possible sequence downwards.
+    # --- Predict Opponent's Next Move ---
     prediction = None
-    for k in range(min(max_len, history_len), 0, -1): # Check lengths from max_len down to 1
-        # Current last sequence of length k
-        current_last_sequence = "".join(opponent_history[-k:]) 
+    # Look for patterns matching the *end* of the current history.
+    # Start with the longest possible sequence and go shorter.
+    for k in range(min(MAX_SEQUENCE_LENGTH, history_len), 0, -1):
+        current_sequence = "".join(opponent_history[-k:])
         
-        # Check if we have recorded what the opponent did *after* this sequence previously
-        if current_last_sequence in play_order:
-            # Get the counts of moves that followed this sequence
-            potential_next_opponent_moves = play_order[current_last_sequence]
-            # Predict the opponent will play the move they played most frequently after this sequence
-            prediction = max(potential_next_opponent_moves, key=potential_next_opponent_moves.get)
-            # If we found a prediction based on this length sequence, stop checking shorter ones
-            break 
+        if current_sequence in learned_patterns:
+            # Get the recorded frequencies of moves following this sequence.
+            move_counts = learned_patterns[current_sequence]
+            
+            # Check if we have recorded any moves following this sequence.
+            if sum(move_counts.values()) > 0:
+                # Predict the opponent will repeat their most frequent response.
+                prediction = max(move_counts, key=move_counts.get)
+                # Found a prediction based on patterns, no need to check shorter sequences.
+                break 
 
-    # --- Determine Our Move ---
+    # --- Select Our Move ---
     if prediction:
-        # If we have a prediction, play the move that beats it
-        guess = ideal_response[prediction]
+        # If a prediction was made, play the counter move.
+        my_move = COUNTER_MOVE[prediction]
     else:
-        # Fallback strategy if no pattern matched (e.g., early in the game or unpredictable opponent)
-        # Options: random, counter last move, fixed guess. 'S' or 'R' are common successful fallbacks here.
-        guess = 'S' # Using 'S' as the fallback guess
+        # Fallback: If no pattern was predictive, counter the opponent's absolute last move.
+        # This provides a basic level of reactivity.
+        my_move = COUNTER_MOVE[prev_opponent_play]
 
-    return guess
+    return my_move
